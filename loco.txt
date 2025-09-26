@@ -1,0 +1,3 @@
+chmod +x /home/cameramodule/Documents/final/check_script.sh
+crontab -e
+* * * * * /home/cameramodule/Documents/final/check_script.sh >> /home/cameramodule/Documents/final/logfile.log 2>&1

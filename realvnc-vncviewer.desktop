@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Link
+Name=VNC Viewer
+Icon=/usr/share/icons/hicolor/48x48/apps/vncviewer48x48.png
+URL=/usr/share/applications/realvnc-vncviewer.desktop

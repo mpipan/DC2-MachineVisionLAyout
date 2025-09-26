@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Zagon Kamera Skripte
+Comment=Runs my Python script
+Exec=python /home/cameramodule/Documents/final/loop_V2.py
+Icon=utilities-terminal
+Terminal=true
+Type=Application
