@@ -36,7 +36,7 @@ def _renaming(name):
     return config.MODULE_NAMES.get(name, 'Unknown')
 
 def _calculate_distance(p1, p2):
-    return math.sqrt((p2[0] - p1[0])**2 + (p2[1 - 1])**2)
+    return math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
 
 # --- Core Processing Functions for Master ---
 def process_master_images(raw_images):
@@ -211,16 +211,32 @@ def redraw_modules_on_final_image():
             
             cv2.polylines(image, [corners_px_raw], isClosed=True, color=config.DRAWING_STYLES["line_color_bgr"], thickness=config.DRAWING_STYLES["line_thickness"])
 
+            # --- NEW DYNAMIC FONT SCALING LOGIC ---
             module_name = module_key.split('_')[0]
             styles = config.DRAWING_STYLES
-            font_scale = styles["final_font_scale"] 
+            
+            # Calculate the pixel width of the module's top edge
+            module_width_px = np.linalg.norm(corners_px_raw[0] - corners_px_raw[1])
+            target_text_width = module_width_px * 0.9 # Target 90% of the module width
+            
+            font_scale = 3.0 # Start with a large base font scale
+            font_thickness = styles["font_thickness"]
+            
+            # Iteratively shrink font size until the text fits within the target width
+            while True:
+                (text_width, _), _ = cv2.getTextSize(module_name, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
+                if text_width < target_text_width or font_scale <= 0.5:
+                    break
+                font_scale -= 0.1
+
             center_x, center_y = np.mean(corners_px_raw, axis=0).astype(np.int32)
-            (tw, th), _ = cv2.getTextSize(module_name, cv2.FONT_HERSHEY_SIMPLEX, font_scale, styles["font_thickness"])
+            (tw, th), _ = cv2.getTextSize(module_name, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
             box_p1 = (center_x - tw // 2 - 5, center_y - th - 5)
             box_p2 = (center_x + tw // 2 + 5, center_y + 5)
             cv2.rectangle(image, box_p1, box_p2, styles["bg_color_bgr"], cv2.FILLED)
             cv2.putText(image, module_name, (center_x - tw // 2, center_y), cv2.FONT_HERSHEY_SIMPLEX, 
-                        font_scale, styles["text_color_bgr"], styles["font_thickness"], cv2.LINE_AA)
+                        font_scale, styles["text_color_bgr"], font_thickness, cv2.LINE_AA)
+            # --- END DYNAMIC FONT SCALING ---
 
         cv2.imwrite(config.COMBINED_IMAGE_FINAL_PATH, image)
         logger.info(f"Saved final retouched image to {config.COMBINED_IMAGE_FINAL_PATH}")

@@ -81,12 +81,8 @@ FINAL_Y_SHIFT = 200
 
 # --- Drawing Style Configuration (Copied from Slave) ---
 DRAWING_STYLES = {
-    "line_color_bgr": (255, 0, 0),      # Blue
-    "text_color_bgr": (0, 0, 255),      # Red
-    "bg_color_bgr":   (255, 255, 255),  # White
-    "line_thickness": 6,
-    "font_scale":     3,
-    "font_thickness": 2
+    "line_color_bgr": (255, 0, 0), "text_color_bgr": (0, 0, 255), "bg_color_bgr": (255, 255, 255),
+    "line_thickness": 10, "font_scale": 3, "font_thickness": 5
 }
 
 # --- Image Joining Parameters ---

@@ -51,7 +51,6 @@ def run_master_capture_only():
 def run_combination_and_publish():
     logger.info("--- Starting Combination and Publish Step ---")
     image_processing.combine_master_slave_coordinates()
-    # REMOVED: No longer creating the intermediate combined image with drawn modules
     # image_processing.join_master_slave_images()
     image_processing.join_master_slave_plain_images()
     image_processing.redraw_modules_on_final_image()
