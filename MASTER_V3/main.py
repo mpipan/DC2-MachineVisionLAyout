@@ -2,108 +2,97 @@ import logging
 import argparse
 import time
 import os
-import cv2
-import json
 
-# Import modules from the refactored project
 import config
 import camera_utils
 import image_processing
 import mqtt_client
 import thingsboard_client
-from utils import NumpyEncoder
+import camera_calibration_master 
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 def setup_directories():
-    """Ensure all necessary directories exist."""
     os.makedirs(config.CAPTURED_PATH, exist_ok=True)
     os.makedirs(config.RECEIVED_PATH, exist_ok=True)
     os.makedirs(config.COMBINED_PATH, exist_ok=True)
     logger.info("All necessary directories are present.")
 
-def run_full_pipeline():
-    """
-    Executes the entire centralized workflow:
-    1. Requests data from the slave via MQTT.
-    2. Captures images and processes modules on the master.
-    3. Combines all data and images, draws all modules, and publishes the result.
-    """
-    logger.info("--- Starting Full Centralized Pipeline Execution ---")
-    
-    # Step 1: Request and receive slave data
-    image_manager = mqtt_client.get_slave_data(timeout=30)
-    if not image_manager:
-        logger.error("Failed to get data from slave. Aborting full pipeline.")
+def run_slave_communication():
+    logger.info("--- Starting Slave Communication Step ---")
+    success = mqtt_client.get_slave_data(timeout=30)
+    if not success:
+        logger.error("Failed to get data from slave. Exiting.")
         return False
-        
-    slave_coords = image_manager.get_slave_coords()
-    slave_image_path = config.SLAVE_UNDRAWN_IMAGE_PATH
-    
-    if not os.path.exists(slave_image_path):
-        logger.error(f"Slave image not found at {slave_image_path}. Did the slave process fail?")
-        return False
+    logger.info("--- Slave Communication Step Finished ---")
+    return True
 
-    # Step 2: Capture and process master images
+def run_master_capture_and_process():
+    logger.info("--- Starting Master Capture and Process Step ---")
     master_images = camera_utils.capture_from_all_cameras()
-    if not master_images:
-        logger.error("Failed to capture images from all master cameras. Aborting.")
+    if len(master_images) < 4:
+        logger.error("Failed to capture images from all master cameras. Exiting.")
         return False
-        
-    master_stitched_image = image_processing.stitch_images(master_images)
-    if master_stitched_image is None:
-        logger.error("Master image stitching failed. Aborting.")
-        return False
-        
-    # Step 3: Combine all data and perform final drawing
-    all_module_coords = image_processing.combine_and_draw(
-        slave_image_path,
-        master_stitched_image,
-        slave_coords
-    )
-
-    if not all_module_coords:
-        logger.error("Final combination and drawing failed. Aborting.")
-        return False
-        
-    # Step 4: Publish the final image and coordinates to ThingsBoard
-    thingsboard_client.publish_to_thingsboard()
-    
-    logger.info("--- Full Pipeline Execution Finished Successfully ---")
+    image_processing.process_master_images(master_images)
+    logger.info("--- Master Capture and Process Step Finished ---")
     return True
 
 def run_master_capture_only():
-    """Captures and saves raw master images without processing."""
-    logger.info("--- Starting Master Capture Only Test ---")
+    logger.info("--- Starting Master Capture Only Step ---")
     master_images = camera_utils.capture_from_all_cameras()
-    if master_images:
-        logger.info(f"Successfully captured {len(master_images)} images. Check {config.CAPTURED_PATH}.")
-    else:
-        logger.error("Master capture test failed.")
+    if len(master_images) < 4:
+        logger.error("Failed to capture images from all master cameras.")
+        return False
+    logger.info(f"Successfully captured and saved {len(master_images)} raw images to '{config.CAPTURED_PATH}'.")
+    logger.info("--- Master Capture Only Step Finished ---")
+    return True
+
+def run_combination_and_publish():
+    logger.info("--- Starting Combination and Publish Step ---")
+    image_processing.combine_master_slave_coordinates()
+    # REMOVED: No longer creating the intermediate combined image with drawn modules
+    # image_processing.join_master_slave_images()
+    image_processing.join_master_slave_plain_images()
+    image_processing.redraw_modules_on_final_image()
+    image_processing.convert_final_coords_to_cm()
+    thingsboard_client.publish_to_thingsboard()
+    logger.info("--- Combination and Publish Step Finished ---")
+    return True
 
 def main():
-    """Main function to start the master service."""
     parser = argparse.ArgumentParser(
         description="Run the master camera control system.",
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument('--full', action='store_true', help='Run the full pipeline.')
+    parser.add_argument('--slave', action='store_true', help='Run only the slave communication part.')
+    parser.add_argument('--master', action='store_true', help='Run only the master camera capture and processing.')
+    parser.add_argument('--publish', action='store_true', help='Run only the combination and publishing part.')
     parser.add_argument('--capture-only', action='store_true', help='Capture and save raw master images without processing.')
+    parser.add_argument('--calibration', action='store_true', help='Perform camera calibration for the master.')
     
     args = parser.parse_args()
     setup_directories()
 
-    if args.full:
-        run_full_pipeline()
-    elif args.capture_only:
-        run_master_capture_only()
+    if args.slave: run_slave_communication()
+    elif args.master: run_master_capture_and_process()
+    elif args.publish: run_combination_and_publish()
+    elif args.capture_only: run_master_capture_only()
+    elif args.calibration: camera_calibration_master.run_camera_calibration()
+    elif args.full:
+        logger.info("Starting full pipeline execution...")
+        if run_slave_communication():
+            time.sleep(2)
+            if run_master_capture_and_process():
+                time.sleep(2)
+                run_combination_and_publish()
+        logger.info("Full pipeline execution finished.")
     else:
-        # Default behavior if no arguments are given is to show help
         parser.print_help()
         logger.info("Please specify an execution mode, e.g., --full.")
 
 if __name__ == "__main__":
     logger.info("Starting master camera service...")
     main()
+

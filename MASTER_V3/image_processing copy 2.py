@@ -6,6 +6,7 @@ import math
 import json
 import os
 import logging
+import base64
 
 import config
 from utils import NumpyEncoder
@@ -31,14 +32,14 @@ if config.USE_HOMOGRAPHY:
     except Exception as e:
         logger.error(f"Failed to load master's calibrated conversion factor: {e}")
 
-# --- Internal Helper Functions ---
+# --- Internal Helper Functions (Mirrored from Slave) ---
 def _renaming(name):
     return config.MODULE_NAMES.get(name, 'Unknown')
 
 def _calculate_distance(p1, p2):
-    return math.sqrt((p2[0] - p1[0])**2 + (p2[1 - 1])**2)
+    return math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
 
-# --- Core Processing Functions for Master ---
+# --- Core Processing Functions for Master (Adapted from Slave) ---
 def process_master_images(raw_images):
     logger.info("--- Starting master image processing stage ---")
     prepared_images = {}
@@ -57,22 +58,30 @@ def process_master_images(raw_images):
 
     stitched_image_plain = _stitch_images(prepared_images)
     cv2.imwrite(config.MASTER_IMAGE_PATH, stitched_image_plain)
-    logger.info("Step 1/4: Master images stitched together.")
+    logger.info("Step 1/5: Master images stitched together.")
 
     pixel_coords = _get_adjusted_coordinates(prepared_images)
     with open(config.MASTER_COORDS_PIXEL_PATH, "w") as f: json.dump(pixel_coords, f, indent=4, cls=NumpyEncoder)
-    logger.info("Step 2/4: Pixel coordinates of QR codes extracted.")
+    logger.info("Step 2/5: Pixel coordinates of QR codes extracted.")
 
     module_outline_coords, conv_factor = _scale_module_outlines(pixel_coords)
     if not module_outline_coords:
         logger.error("Failed to calculate module outlines for master. Aborting.")
         return False
     with open(config.MASTER_COORDS_SCALED_PATH, "w") as f: json.dump(module_outline_coords, f, indent=4, cls=NumpyEncoder)
-    logger.info("Step 3/4: Module outline coordinates calculated in mm.")
+    logger.info("Step 3/5: Module outline coordinates calculated in mm.")
 
     stitched_image_with_modules = _draw_modules_on_image(stitched_image_plain, module_outline_coords, conv_factor, config.MASTER_IMAGE_WITH_MODULES_PATH)
     if stitched_image_with_modules is None: return False
-    logger.info("Step 4/4: Visualization image created for master.")
+    logger.info("Step 4/5: Visualization image created for master.")
+
+    final_shifted_coords = {
+        name: [[p[0] + config.FINAL_X_SHIFT, p[1] + config.FINAL_Y_SHIFT] for p in coords]
+        for name, coords in module_outline_coords.items()
+    }
+    with open(config.MASTER_COORDS_FINAL_SHIFTED_PATH, "w") as f: json.dump(final_shifted_coords, f, indent=4, cls=NumpyEncoder)
+    
+    logger.info("Step 5/5: Master processing stage complete. All files saved.")
     return True
 
 def _stitch_images(images):
@@ -90,7 +99,7 @@ def _get_adjusted_coordinates(images):
     offsets = [0, widths[0], widths[0]+widths[1], widths[0]+widths[1]+widths[2]]
     codes = {name: _decode_qr_codes(img) for name, img in images.items()}
     output = {}
-    h = images['A'].shape[0] 
+    h = images['A'].shape[0]
     for i, name in enumerate(images.keys()):
         if codes.get(name):
             output.update({k: [np.array([p[0] + offsets[i] - config.ADJUSTMENTS[name]['l'], h - p[1]]) for p in v] for k, v in codes[name].items()})
@@ -143,125 +152,118 @@ def combine_master_slave_coordinates():
     combined_data = {}
     try:
         if os.path.exists(config.SLAVE_COORDS_PATH):
-            with open(config.SLAVE_COORDS_PATH, "r") as f: 
-                slave_data = json.load(f)
-                combined_data.update({f"{k}_slave": v for k, v in slave_data.items()})
-        if os.path.exists(config.MASTER_COORDS_SCALED_PATH):
-            with open(config.MASTER_COORDS_SCALED_PATH, "r") as f: 
-                master_data = json.load(f)
-                combined_data.update({f"{k}_master": v for k, v in master_data.items()})
+            with open(config.SLAVE_COORDS_PATH, "r") as f: combined_data.update(json.load(f))
+        if os.path.exists(config.MASTER_COORDS_FINAL_SHIFTED_PATH):
+            with open(config.MASTER_COORDS_FINAL_SHIFTED_PATH, "r") as f: combined_data.update(json.load(f))
+
         with open(config.COMBINED_COORDS_PATH, "w") as f: json.dump(combined_data, f, indent=4, cls=NumpyEncoder)
         logger.info(f"Saved combined coordinates to {config.COMBINED_COORDS_PATH}")
     except Exception as e:
         logger.error(f"Failed to combine coordinates: {e}")
 
-def _join_images_generic(top_img_path, bottom_img_path, output_path):
+def join_master_slave_images():
+    logger.info("Joining master and slave images...")
     try:
-        top_img = cv2.imread(top_img_path)
-        bottom_img = cv2.imread(bottom_img_path)
+        top_img = cv2.imread(config.SLAVE_IMAGE_WITH_MODULES_PATH)
+        bottom_img = cv2.imread(config.MASTER_IMAGE_WITH_MODULES_PATH)
+
         if top_img is None or bottom_img is None:
-            logger.error(f"Could not load one or both images for joining: {top_img_path}, {bottom_img_path}")
-            return False
+            logger.error("Could not load one or both images for joining. Check paths.")
+            return
+
         p = config.JOIN
         common_width = max(top_img.shape[1] + abs(p['top_horizontal_shift']), bottom_img.shape[1] + abs(p['bottom_horizontal_shift']))
+        
         top_canvas = np.full((top_img.shape[0], common_width, 3), p['padding_color'], dtype=np.uint8)
         bottom_canvas = np.full((bottom_img.shape[0], common_width, 3), p['padding_color'], dtype=np.uint8)
+        
         top_x = max(0, p['top_horizontal_shift'])
         bottom_x = max(0, p['bottom_horizontal_shift'])
+        
         top_canvas[:, top_x:top_x + top_img.shape[1]] = top_img
         bottom_canvas[:, bottom_x:bottom_x + bottom_img.shape[1]] = bottom_img
+        
         top_canvas_cropped = top_canvas[p['top_top_crop'] : top_canvas.shape[0] - p['top_bottom_crop'], :]
         bottom_canvas_cropped = bottom_canvas[p['bottom_top_crop'] : bottom_canvas.shape[0] - p['bottom_bottom_crop'], :]
+        
         combined_image = np.vstack((top_canvas_cropped, bottom_canvas_cropped))
-        cv2.imwrite(output_path, combined_image)
-        logger.info(f"Saved combined image to {output_path}")
-        return True
+        cv2.imwrite(config.COMBINED_IMAGE_PATH, combined_image)
+        logger.info(f"Saved final combined image to {config.COMBINED_IMAGE_PATH}")
     except Exception as e:
-        logger.error(f"Failed during generic image joining: {e}")
-        return False
-
-def join_master_slave_plain_images():
-    logger.info("Joining master and slave plain images (without modules)...")
-    _join_images_generic(config.SLAVE_IMAGE_PATH, config.MASTER_IMAGE_PATH, config.COMBINED_IMAGE_PLAIN_PATH)
+        logger.error(f"Failed to join images: {e}")
 
 def redraw_modules_on_final_image():
-    logger.info("Redrawing all modules on fresh combined image with accurate coordinates...")
+    """
+    NEW: Retouches the final combined image to fix broken module outlines at the seam.
+    """
+    logger.info("Retouching final image to complete all module outlines...")
     try:
-        image = cv2.imread(config.COMBINED_IMAGE_PLAIN_PATH)
+        image = cv2.imread(config.COMBINED_IMAGE_PATH)
         if image is None:
-            logger.error(f"Could not load plain combined image at {config.COMBINED_IMAGE_PLAIN_PATH}")
+            logger.error(f"Could not load combined image at {config.COMBINED_IMAGE_PATH}")
             return
-        with open(config.COMBINED_COORDS_PATH, 'r') as f: all_coords_mm = json.load(f)
-        slave_stitched_img = cv2.imread(config.SLAVE_IMAGE_PATH)
-        master_stitched_img = cv2.imread(config.MASTER_IMAGE_PATH)
-        slave_h, _ = slave_stitched_img.shape[:2]
-        master_h, _ = master_stitched_img.shape[:2]
-        slave_final_h = slave_h - config.JOIN['top_top_crop'] - config.JOIN['top_bottom_crop']
 
-        for module_key, corners_mm in all_coords_mm.items():
-            corners_px_raw = (np.array(corners_mm) / CALIBRATED_CONV_FACTOR).astype(np.int32)
-            if "_slave" in module_key:
-                corners_px_raw[:, 1] = slave_h - corners_px_raw[:, 1]
-                corners_px_raw[:, 0] += config.JOIN['top_horizontal_shift']
-                corners_px_raw[:, 1] -= config.JOIN['top_top_crop']
-            elif "_master" in module_key:
-                corners_px_raw[:, 1] = master_h - corners_px_raw[:, 1]
-                corners_px_raw[:, 0] += config.JOIN['bottom_horizontal_shift']
-                corners_px_raw[:, 1] += slave_final_h - config.JOIN['bottom_top_crop']
-            
-            cv2.polylines(image, [corners_px_raw], isClosed=True, color=config.DRAWING_STYLES["line_color_bgr"], thickness=config.DRAWING_STYLES["line_thickness"])
+        with open(config.COMBINED_COORDS_PATH, 'r') as f:
+            all_coords_mm = json.load(f)
 
-            module_name = module_key.split('_')[0]
-            styles = config.DRAWING_STYLES
-            font_scale = styles["final_font_scale"] 
-            center_x, center_y = np.mean(corners_px_raw, axis=0).astype(np.int32)
-            (tw, th), _ = cv2.getTextSize(module_name, cv2.FONT_HERSHEY_SIMPLEX, font_scale, styles["font_thickness"])
-            box_p1 = (center_x - tw // 2 - 5, center_y - th - 5)
-            box_p2 = (center_x + tw // 2 + 5, center_y + 5)
-            cv2.rectangle(image, box_p1, box_p2, styles["bg_color_bgr"], cv2.FILLED)
-            cv2.putText(image, module_name, (center_x - tw // 2, center_y), cv2.FONT_HERSHEY_SIMPLEX, 
-                        font_scale, styles["text_color_bgr"], styles["font_thickness"], cv2.LINE_AA)
+        pixel_dist = abs(config.PIXEL_POINT_1 - config.PIXEL_POINT_2)
+        if pixel_dist == 0:
+            logger.error("Pixel distance for scaling cannot be zero.")
+            return
+        mm_per_pixel = (config.REAL_DISTANCE_CM * 10) / pixel_dist
+        
+        # We need to know the height offset of the slave image inside the final canvas
+        slave_img_h = cv2.imread(config.SLAVE_IMAGE_WITH_MODULES_PATH).shape[0]
+        slave_h_after_crop = slave_img_h - config.JOIN['top_top_crop'] - config.JOIN['top_bottom_crop']
+
+        for module, corners_mm in all_coords_mm.items():
+            corners_px_raw = (np.array(corners_mm) / mm_per_pixel)
+
+            # Adjust coordinates based on whether they are from slave or master
+            y_coords = corners_px_raw[:, 1]
+            if np.mean(y_coords) > 0: # Slave coordinates are positive Y
+                corners_px_raw[:, 1] = slave_h_after_crop - corners_px_raw[:, 1]
+            else: # Master coordinates are negative Y
+                corners_px_raw[:, 1] = slave_h_after_crop - corners_px_raw[:, 1]
+
+            pixel_points = corners_px_raw.astype(np.int32)
+            cv2.polylines(image, [pixel_points], isClosed=True, color=config.DRAWING_STYLES["line_color_bgr"], thickness=config.DRAWING_STYLES["line_thickness"])
 
         cv2.imwrite(config.COMBINED_IMAGE_FINAL_PATH, image)
-        logger.info(f"Saved final retouched image to {config.COMBINED_IMAGE_FINAL_PATH}")
+        logger.info(f"Saved retouched final image to {config.COMBINED_IMAGE_FINAL_PATH}")
+        
+        # Resize the final retouched image for upload
+        h, w = image.shape[:2]
+        resized_image = cv2.resize(image, (800, int(h * (800 / w))), interpolation=cv2.INTER_AREA)
+        cv2.imwrite(config.COMBINED_IMAGE_RESIZED_PATH, resized_image)
+        logger.info(f"Saved resized final image for upload to {config.COMBINED_IMAGE_RESIZED_PATH}")
 
     except Exception as e:
-        logger.error(f"Failed to redraw modules on final image: {e}", exc_info=True)
+        logger.error(f"Failed to redraw modules on final image: {e}")
 
 def convert_final_coords_to_cm():
     logger.info("Converting final coordinates to cm...")
     try:
         with open(config.COMBINED_COORDS_PATH, 'r') as f: data = json.load(f)
-        slave_stitched_img = cv2.imread(config.SLAVE_IMAGE_PATH)
-        master_stitched_img = cv2.imread(config.MASTER_IMAGE_PATH)
-        slave_h, _ = slave_stitched_img.shape[:2]
-        master_h, _ = master_stitched_img.shape[:2]
-        slave_final_h = slave_h - config.JOIN['top_top_crop'] - config.JOIN['top_bottom_crop']
+        
+        converted_data = {}
+        for name, corners in data.items():
+             if isinstance(corners, list) and len(corners) == 4:
+                center_x = sum(p[0] for p in corners) / 4
+                center_y = sum(p[1] for p in corners) / 4
+                angle = math.degrees(math.atan2(corners[1][1] - corners[0][1], corners[1][0] - corners[0][0]))
+                converted_data[name] = [center_x, center_y, angle]
 
-        final_pixel_coords = {}
-        for module_key, corners_mm in data.items():
-            corners_px_raw = (np.array(corners_mm) / CALIBRATED_CONV_FACTOR)
-            if "_slave" in module_key:
-                corners_px_raw[:, 1] = slave_h - corners_px_raw[:, 1]
-                corners_px_raw[:, 0] += config.JOIN['top_horizontal_shift']
-                corners_px_raw[:, 1] -= config.JOIN['top_top_crop']
-            elif "_master" in module_key:
-                corners_px_raw[:, 1] = master_h - corners_px_raw[:, 1]
-                corners_px_raw[:, 0] += config.JOIN['bottom_horizontal_shift']
-                corners_px_raw[:, 1] += slave_final_h - config.JOIN['bottom_top_crop']
-            final_pixel_coords[module_key.split('_')[0]] = corners_px_raw.tolist()
+        with open(config.COMBINED_CONVERTED_COORDS_PATH, 'w') as f: json.dump(converted_data, f, indent=4)
 
-        cm_per_pixel = (config.REAL_DISTANCE_CM) / abs(config.PIXEL_POINT_1 - config.PIXEL_POINT_2)
-
-        final_cm_data = {}
-        for name, corners in final_pixel_coords.items():
-            center_x_px = sum(p[0] for p in corners) / 4
-            center_y_px = sum(p[1] for p in corners) / 4
-            angle = math.degrees(math.atan2(corners[1][1] - corners[0][1], corners[1][0] - corners[0][0]))
-            final_cm_data[name] = [center_x_px * cm_per_pixel, center_y_px * cm_per_pixel, angle]
-
+        pixel_dist = abs(config.PIXEL_POINT_1 - config.PIXEL_POINT_2)
+        if pixel_dist == 0:
+            logger.error("Pixel distance for scaling cannot be zero.")
+            return
+        cm_per_pixel = config.REAL_DISTANCE_CM / pixel_dist
+        final_cm_data = {k: [v[0] * cm_per_pixel, v[1] * cm_per_pixel, v[2]] for k, v in converted_data.items()}
         with open(config.COORDS_IN_CM_PATH, 'w') as f: json.dump(final_cm_data, f, indent=4)
-        logger.info(f"Converted final coordinates to cm and saved to {config.COORDS_IN_CM_PATH}")
+        logger.info(f"Converted coordinates to cm and saved to {config.COORDS_IN_CM_PATH}")
     except Exception as e:
-        logger.error(f"Failed to convert coordinates to cm: {e}", exc_info=True)
+        logger.error(f"Failed to convert coordinates to cm: {e}")
 

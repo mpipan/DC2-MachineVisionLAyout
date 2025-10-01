@@ -34,23 +34,23 @@ class ImageManager:
         logger.info("Saving all received data from slave...")
         
         # Save images
-        image_keys = {
-            'zdruzena_brez_nic': config.SLAVE_IMAGE_PATH,
-            'rezultat_z_moduli': config.SLAVE_IMAGE_WITH_MODULES_PATH
-        }
-        for key, save_path in image_keys.items():
+        for key in ['zdruzena_brez_nic', 'rezultat_z_moduli']:
             image = self.get_data(key)
             if image is not None:
+                # The key in the payload from the slave might be different from the final filename
+                if key == 'zdruzena_brez_nic':
+                    save_path = config.SLAVE_IMAGE_PATH
+                else:
+                    save_path = config.SLAVE_IMAGE_WITH_MODULES_PATH
                 cv2.imwrite(save_path, image)
                 logger.info(f"Saved slave image '{key}' to {save_path}")
         
         # Save coordinate data
-        # CHANGED: Now looks for the unshifted scaled coordinates
-        coords = self.get_data('koordinate_skalirane')
+        coords = self.get_data('koordinate')
         if coords:
             with open(config.SLAVE_COORDS_PATH, "w") as f:
                 json.dump(coords, f, indent=4, cls=NumpyEncoder)
-            logger.info(f"Saved slave scaled coordinates to {config.SLAVE_COORDS_PATH}")
+            logger.info(f"Saved slave coordinates to {config.SLAVE_COORDS_PATH}")
 
 
 class MQTTHandler:
@@ -82,6 +82,7 @@ class MQTTHandler:
                 # Process and store each piece of data from the payload
                 for key, value in payload.items():
                     if 'image' in key or 'zdruzena' in key or 'rezultat' in key:
+                        # Decode base64 image
                         image_bytes = base64.b64decode(value)
                         nparr = np.frombuffer(image_bytes, np.uint8)
                         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -90,10 +91,11 @@ class MQTTHandler:
                         else:
                             logger.warning(f"Failed to decode image for key: {key}")
                     else:
+                        # Store other data (like coordinates) directly
                         self.image_manager.store_data(key, value)
 
                 logger.info("Successfully processed and stored all remote data.")
-                self.data_received_event.set() 
+                self.data_received_event.set() # Signal that data has been received
 
             except Exception as e:
                 logger.error(f"Error processing message: {e}", exc_info=True)
@@ -103,6 +105,7 @@ class MQTTHandler:
             logger.error(f"Unexpected MQTT disconnection with code {rc}.")
 
     def start(self):
+        """Connects to the broker and starts the client loop in a new thread."""
         try:
             self.client.connect(config.MQTT_BROKER_HOST, config.MQTT_BROKER_PORT, config.MQTT_KEEPALIVE)
             self.client.loop_start()
@@ -112,11 +115,13 @@ class MQTTHandler:
             raise
 
     def stop(self):
+        """Stops the MQTT client loop and disconnects."""
         self.client.loop_stop()
         self.client.disconnect()
         logger.info("MQTT handler stopped.")
 
     def request_images(self):
+        """Publishes a command to the slave to capture and send images."""
         self.client.publish(config.MQTT_TOPIC_COMMAND, 'capture')
         logger.info(f"Sent 'capture' command to slave on topic '{config.MQTT_TOPIC_COMMAND}'.")
 
@@ -130,9 +135,10 @@ def get_slave_data(timeout=30):
     
     try:
         mqtt_handler.start()
-        time.sleep(1) 
+        time.sleep(1) # Give a moment for the connection to establish
         mqtt_handler.request_images()
         
+        # Wait for the data_received_event to be set, with a timeout
         logger.info(f"Waiting for data from slave... (timeout: {timeout}s)")
         received = mqtt_handler.data_received_event.wait(timeout)
         
@@ -149,3 +155,22 @@ def get_slave_data(timeout=30):
         return False
     finally:
         mqtt_handler.stop()
+
+if __name__ == "__main__":
+    """
+    This block allows running the MQTT client module independently for testing.
+    It will attempt to connect, request data, and save it.
+    """
+    logger.info("Running mqtt_client.py standalone for testing...")
+    
+    # Ensure the output directory exists
+    if not os.path.exists(config.RECEIVED_PATH):
+        os.makedirs(config.RECEIVED_PATH)
+        logger.info(f"Created directory: {config.RECEIVED_PATH}")
+
+    success = get_slave_data(timeout=45)
+    
+    if success:
+        logger.info("Standalone test finished successfully.")
+    else:
+        logger.error("Standalone test failed.")
