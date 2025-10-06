@@ -14,16 +14,16 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # --- Load Calibrated Conversion Factor (from master's calibration) ---
-CALIBRATED_CONV_FACTOR = None
+CALIBRATED_CONV_FACTOR_MASTER = None # RENAMED for clarity
 if config.USE_HOMOGRAPHY:
     try:
         factor_path = os.path.join(config.CAPTURED_PATH, config.CALIBRATED_FACTOR_FILE)
         if os.path.exists(factor_path):
             with open(factor_path, 'r') as f:
                 data = json.load(f)
-                CALIBRATED_CONV_FACTOR = data.get("conversion_factor")
-            if CALIBRATED_CONV_FACTOR:
-                 logger.info(f"Successfully loaded master's calibrated conversion factor: {CALIBRATED_CONV_FACTOR}")
+                CALIBRATED_CONV_FACTOR_MASTER = data.get("conversion_factor")
+            if CALIBRATED_CONV_FACTOR_MASTER:
+                 logger.info(f"Successfully loaded master's calibrated conversion factor: {CALIBRATED_CONV_FACTOR_MASTER}")
             else:
                 logger.error("Master's calibrated factor file is invalid.")
         else:
@@ -32,6 +32,7 @@ if config.USE_HOMOGRAPHY:
         logger.error(f"Failed to load master's calibrated conversion factor: {e}")
 
 # --- Internal Helper Functions ---
+# ... (no changes in this section) ...
 def _renaming(name):
     return config.MODULE_NAMES.get(name, 'Unknown')
 
@@ -40,6 +41,7 @@ def _calculate_distance(p1, p2):
 
 # --- Core Processing Functions for Master ---
 def process_master_images(raw_images):
+# ... (no changes in this function) ...
     logger.info("--- Starting master image processing stage ---")
     prepared_images = {}
     
@@ -76,16 +78,20 @@ def process_master_images(raw_images):
     return True
 
 def _stitch_images(images):
+# ... (no changes in this function) ...
     cropped_parts = [img[:, config.ADJUSTMENTS[name]['l'] : img.shape[1] - config.ADJUSTMENTS[name]['d']] for name, img in images.items()]
     return cv2.hconcat(cropped_parts)
 
 def _decode_qr_codes(image):
+# ... (no changes in this function) ...
     if image is None: return {}
-    barcodes = zxingcpp.read_barcodes(image)
+    gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    barcodes = zxingcpp.read_barcodes(gray_image)
     positions = { _renaming(str(b.text)): [np.array([int(p.split('x')[0]), int(p.split('x')[1])]) for p in str(b.position).strip('\x00').split()] for b in barcodes if _renaming(str(b.text)) != 'Unknown' }
     return positions
 
 def _get_adjusted_coordinates(images):
+# ... (no changes in this function) ...
     widths = [img.shape[1] - config.ADJUSTMENTS[name]['l'] - config.ADJUSTMENTS[name]['d'] for name, img in images.items()]
     offsets = [0, widths[0], widths[0]+widths[1], widths[0]+widths[1]+widths[2]]
     codes = {name: _decode_qr_codes(img) for name, img in images.items()}
@@ -97,7 +103,8 @@ def _get_adjusted_coordinates(images):
     return output
 
 def _scale_module_outlines(qr_coords_pixels):
-    conv_factor = CALIBRATED_CONV_FACTOR if config.USE_HOMOGRAPHY and CALIBRATED_CONV_FACTOR else None
+# ... (no changes in this function) ...
+    conv_factor = CALIBRATED_CONV_FACTOR_MASTER if config.USE_HOMOGRAPHY and CALIBRATED_CONV_FACTOR_MASTER else None
     if not conv_factor:
         logger.warning("Using QR-based conversion factor for scaling on master.")
         lengths = [_calculate_distance(c[i], c[(i + 1) % 4]) for c in qr_coords_pixels.values() for i in range(4)]
@@ -119,6 +126,7 @@ def _scale_module_outlines(qr_coords_pixels):
     return module_outlines_mm, conv_factor
 
 def _draw_modules_on_image(image, module_outlines_mm, conv_factor, output_path):
+# ... (no changes in this function) ...
     try:
         canvas = image.copy()
         styles = config.DRAWING_STYLES
@@ -139,6 +147,7 @@ def _draw_modules_on_image(image, module_outlines_mm, conv_factor, output_path):
         return None
 
 def combine_master_slave_coordinates():
+# ... (no changes in this function) ...
     logger.info("Combining master and slave coordinates...")
     combined_data = {}
     try:
@@ -156,6 +165,7 @@ def combine_master_slave_coordinates():
         logger.error(f"Failed to combine coordinates: {e}")
 
 def _join_images_generic(top_img_path, bottom_img_path, output_path):
+# ... (no changes in this function) ...
     try:
         top_img = cv2.imread(top_img_path)
         bottom_img = cv2.imread(bottom_img_path)
@@ -181,48 +191,67 @@ def _join_images_generic(top_img_path, bottom_img_path, output_path):
         return False
 
 def join_master_slave_plain_images():
+# ... (no changes in this function) ...
     logger.info("Joining master and slave plain images (without modules)...")
     _join_images_generic(config.SLAVE_IMAGE_PATH, config.MASTER_IMAGE_PATH, config.COMBINED_IMAGE_PLAIN_PATH)
 
 def redraw_modules_on_final_image():
     logger.info("Redrawing all modules on fresh combined image with accurate coordinates...")
     try:
+        # NEW: Load the slave's conversion factor
+        conv_factor_slave = None
+        slave_factor_path = os.path.join(config.RECEIVED_PATH, "slave_conv_factor.json")
+        if os.path.exists(slave_factor_path):
+            with open(slave_factor_path, 'r') as f:
+                data = json.load(f)
+                conv_factor_slave = data.get("conv_factor_slave")
+                logger.info(f"Successfully loaded slave's conversion factor: {conv_factor_slave}")
+        
+        if not conv_factor_slave:
+            logger.warning("Could not load slave conversion factor. Slave modules may be inaccurate.")
+            conv_factor_slave = CALIBRATED_CONV_FACTOR_MASTER # Fallback to master's factor
+
         image = cv2.imread(config.COMBINED_IMAGE_PLAIN_PATH)
         if image is None:
             logger.error(f"Could not load plain combined image at {config.COMBINED_IMAGE_PLAIN_PATH}")
             return
         with open(config.COMBINED_COORDS_PATH, 'r') as f: all_coords_mm = json.load(f)
+        
         slave_stitched_img = cv2.imread(config.SLAVE_IMAGE_PATH)
         master_stitched_img = cv2.imread(config.MASTER_IMAGE_PATH)
+        
         slave_h, _ = slave_stitched_img.shape[:2]
         master_h, _ = master_stitched_img.shape[:2]
+
         slave_final_h = slave_h - config.JOIN['top_top_crop'] - config.JOIN['top_bottom_crop']
 
         for module_key, corners_mm in all_coords_mm.items():
-            corners_px_raw = (np.array(corners_mm) / CALIBRATED_CONV_FACTOR).astype(np.int32)
+            # MODIFIED: Use the correct conversion factor for each module type
             if "_slave" in module_key:
+                corners_px_raw = (np.array(corners_mm) / conv_factor_slave).astype(np.int32)
                 corners_px_raw[:, 1] = slave_h - corners_px_raw[:, 1]
                 corners_px_raw[:, 0] += config.JOIN['top_horizontal_shift']
                 corners_px_raw[:, 1] -= config.JOIN['top_top_crop']
+
             elif "_master" in module_key:
+                corners_px_raw = (np.array(corners_mm) / CALIBRATED_CONV_FACTOR_MASTER).astype(np.int32)
                 corners_px_raw[:, 1] = master_h - corners_px_raw[:, 1]
                 corners_px_raw[:, 0] += config.JOIN['bottom_horizontal_shift']
                 corners_px_raw[:, 1] += slave_final_h - config.JOIN['bottom_top_crop']
+            else:
+                continue # Skip if key is malformed
             
             cv2.polylines(image, [corners_px_raw], isClosed=True, color=config.DRAWING_STYLES["line_color_bgr"], thickness=config.DRAWING_STYLES["line_thickness"])
 
-            # --- NEW DYNAMIC FONT SCALING LOGIC ---
             module_name = module_key.split('_')[0]
             styles = config.DRAWING_STYLES
             
-            # Calculate the pixel width of the module's top edge
             module_width_px = np.linalg.norm(corners_px_raw[0] - corners_px_raw[1])
-            target_text_width = module_width_px * 0.9 # Target 90% of the module width
+            target_text_width = module_width_px * 0.9
             
-            font_scale = 3.0 # Start with a large base font scale
+            font_scale = 3.0
             font_thickness = styles["font_thickness"]
             
-            # Iteratively shrink font size until the text fits within the target width
             while True:
                 (text_width, _), _ = cv2.getTextSize(module_name, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
                 if text_width < target_text_width or font_scale <= 0.5:
@@ -236,7 +265,6 @@ def redraw_modules_on_final_image():
             cv2.rectangle(image, box_p1, box_p2, styles["bg_color_bgr"], cv2.FILLED)
             cv2.putText(image, module_name, (center_x - tw // 2, center_y), cv2.FONT_HERSHEY_SIMPLEX, 
                         font_scale, styles["text_color_bgr"], font_thickness, cv2.LINE_AA)
-            # --- END DYNAMIC FONT SCALING ---
 
         cv2.imwrite(config.COMBINED_IMAGE_FINAL_PATH, image)
         logger.info(f"Saved final retouched image to {config.COMBINED_IMAGE_FINAL_PATH}")
@@ -247,24 +275,45 @@ def redraw_modules_on_final_image():
 def convert_final_coords_to_cm():
     logger.info("Converting final coordinates to cm...")
     try:
+        # NEW: Load the slave's conversion factor here as well
+        conv_factor_slave = None
+        slave_factor_path = os.path.join(config.RECEIVED_PATH, "slave_conv_factor.json")
+        if os.path.exists(slave_factor_path):
+            with open(slave_factor_path, 'r') as f:
+                data = json.load(f)
+                conv_factor_slave = data.get("conv_factor_slave")
+        
+        if not conv_factor_slave:
+            logger.warning("Could not load slave conversion factor for cm conversion.")
+            conv_factor_slave = CALIBRATED_CONV_FACTOR_MASTER
+
         with open(config.COMBINED_COORDS_PATH, 'r') as f: data = json.load(f)
+        
         slave_stitched_img = cv2.imread(config.SLAVE_IMAGE_PATH)
         master_stitched_img = cv2.imread(config.MASTER_IMAGE_PATH)
+        
         slave_h, _ = slave_stitched_img.shape[:2]
         master_h, _ = master_stitched_img.shape[:2]
+        
         slave_final_h = slave_h - config.JOIN['top_top_crop'] - config.JOIN['top_bottom_crop']
 
         final_pixel_coords = {}
         for module_key, corners_mm in data.items():
-            corners_px_raw = (np.array(corners_mm) / CALIBRATED_CONV_FACTOR)
+            # MODIFIED: Use the correct factor for each type
             if "_slave" in module_key:
+                corners_px_raw = (np.array(corners_mm) / conv_factor_slave)
                 corners_px_raw[:, 1] = slave_h - corners_px_raw[:, 1]
                 corners_px_raw[:, 0] += config.JOIN['top_horizontal_shift']
                 corners_px_raw[:, 1] -= config.JOIN['top_top_crop']
+
             elif "_master" in module_key:
+                corners_px_raw = (np.array(corners_mm) / CALIBRATED_CONV_FACTOR_MASTER)
                 corners_px_raw[:, 1] = master_h - corners_px_raw[:, 1]
                 corners_px_raw[:, 0] += config.JOIN['bottom_horizontal_shift']
                 corners_px_raw[:, 1] += slave_final_h - config.JOIN['bottom_top_crop']
+            else:
+                continue
+
             final_pixel_coords[module_key.split('_')[0]] = corners_px_raw.tolist()
 
         cm_per_pixel = (config.REAL_DISTANCE_CM) / abs(config.PIXEL_POINT_1 - config.PIXEL_POINT_2)

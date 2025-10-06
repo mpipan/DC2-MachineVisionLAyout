@@ -55,7 +55,10 @@ CAMERA_DEVICE_PATHS = {
     'C': "/dev/video4",
     'D': "/dev/video6"
 }
-PREFERRED_SIZES = [(3840, 2160), (1920, 1080), (1280, 720)]
+
+#PREFERRED_SIZES = [(3840, 2160), (1920, 1080), (1280, 720)]
+#PREFERRED_SIZES = [(1280, 720), (1920, 1080), (3840, 2160)]
+PREFERRED_SIZES = [(1920, 1080), (3840, 2160), (1280, 720)]
 WARMUP_FRAMES = 5
 
 # --- Image Processing Parameters ---

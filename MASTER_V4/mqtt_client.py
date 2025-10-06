@@ -35,7 +35,7 @@ class ImageManager:
         
         # Save images
         image_keys = {
-            'zdruzena_brez_nic': config.SLAVE_IMAGE_PATH,
+            'zdruzena_slika_slave': config.SLAVE_IMAGE_PATH,
             'rezultat_z_moduli': config.SLAVE_IMAGE_WITH_MODULES_PATH
         }
         for key, save_path in image_keys.items():
@@ -45,15 +45,24 @@ class ImageManager:
                 logger.info(f"Saved slave image '{key}' to {save_path}")
         
         # Save coordinate data
-        # CHANGED: Now looks for the unshifted scaled coordinates
         coords = self.get_data('koordinate_skalirane')
         if coords:
             with open(config.SLAVE_COORDS_PATH, "w") as f:
                 json.dump(coords, f, indent=4, cls=NumpyEncoder)
             logger.info(f"Saved slave scaled coordinates to {config.SLAVE_COORDS_PATH}")
+        
+        # NEW: Save the slave's conversion factor
+        conv_factor = self.get_data('conv_factor_slave')
+        if conv_factor:
+            factor_path = os.path.join(config.RECEIVED_PATH, "slave_conv_factor.json")
+            with open(factor_path, "w") as f:
+                json.dump({"conv_factor_slave": conv_factor}, f, indent=4)
+            logger.info(f"Saved slave conversion factor to {factor_path}")
 
 
 class MQTTHandler:
+# ... (rest of the file is unchanged) ...
+# ... (I've confirmed no other changes are needed in this file) ...
     """Handles MQTT connection and message processing."""
     def __init__(self, image_manager):
         self.client = mqtt.Client()
@@ -149,3 +158,4 @@ def get_slave_data(timeout=30):
         return False
     finally:
         mqtt_handler.stop()
+
